@@ -126,7 +126,11 @@ type metricsEncoder struct {
 }
 
 func (e *metricsEncoder) Close() error {
+	if e.Encoder == nil {
+		return nil
+	}
 	err := e.Encoder.Close()
+	e.Encoder = nil
 	e.releases.Inc()
 	return err
 }
@@ -137,6 +141,10 @@ type metricsDecoder struct {
 }
 
 func (d *metricsDecoder) Close() {
+	if d.Decoder == nil {
+		return
+	}
 	d.Decoder.Close()
+	d.Decoder = nil
 	d.releases.Inc()
 }
