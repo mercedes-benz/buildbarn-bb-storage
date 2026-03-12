@@ -33,8 +33,8 @@ func NewBlockDeviceFromFile(path string, minimumSizeBytes int, zeroInitialize bo
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return nil, 0, 0, util.StatusWrapf(err, "Failed to obtain size of file %#v", path)
 	}
-	sectorSizeBytes := int(stat.Blksize)
-	sectorCount := int64((uint64(minimumSizeBytes) + uint64(stat.Blksize) - 1) / uint64(stat.Blksize))
+	sectorSizeBytes := max(int(stat.Blksize), unix.Getpagesize())
+	sectorCount := int64((uint64(minimumSizeBytes) + uint64(sectorSizeBytes) - 1) / uint64(sectorSizeBytes))
 	sizeBytes := int64(sectorSizeBytes) * sectorCount
 
 	if err := unix.Ftruncate(fd, sizeBytes); err != nil {
