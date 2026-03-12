@@ -13,8 +13,8 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/blobstore/slicing"
 	"github.com/buildbarn/bb-storage/pkg/digest"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	bb_zstd "github.com/buildbarn/bb-storage/pkg/zstd"
 	"github.com/google/uuid"
-	"github.com/klauspost/compress/zstd"
 
 	"google.golang.org/genproto/googleapis/bytestream"
 	"google.golang.org/grpc"
@@ -29,8 +29,8 @@ type casBlobAccess struct {
 	capabilitiesClient              remoteexecution.CapabilitiesClient
 	uuidGenerator                   util.UUIDGenerator
 	readChunkSize                   int
-	enableZSTDCompression           bool
 	supportedCompressors            atomic.Pointer[[]remoteexecution.Compressor_Value]
+	zstdPool                        bb_zstd.Pool
 }
 
 // NewCASBlobAccess creates a BlobAccess handle that relays any requests
@@ -39,16 +39,16 @@ type casBlobAccess struct {
 // services that Bazel uses to access blobs stored in the Content
 // Addressable Storage.
 //
-// If enableZSTDCompression is true, the client will use ZSTD compression
-// for ByteStream operations if the server supports it.
-func NewCASBlobAccess(client grpc.ClientConnInterface, uuidGenerator util.UUIDGenerator, readChunkSize int, enableZSTDCompression bool) blobstore.BlobAccess {
+// If zstdPool is non-nil, the client will use ZSTD compression for
+// ByteStream operations if the server supports it.
+func NewCASBlobAccess(client grpc.ClientConnInterface, uuidGenerator util.UUIDGenerator, readChunkSize int, zstdPool bb_zstd.Pool) blobstore.BlobAccess {
 	return &casBlobAccess{
 		byteStreamClient:                bytestream.NewByteStreamClient(client),
 		contentAddressableStorageClient: remoteexecution.NewContentAddressableStorageClient(client),
 		capabilitiesClient:              remoteexecution.NewCapabilitiesClient(client),
 		uuidGenerator:                   uuidGenerator,
 		readChunkSize:                   readChunkSize,
-		enableZSTDCompression:           enableZSTDCompression,
+		zstdPool:                        zstdPool,
 	}
 }
 
@@ -74,47 +74,20 @@ func (r *byteStreamChunkReader) Close() {
 	}
 }
 
+// zstdByteStreamChunkReader reads compressed data from a gRPC stream
+// and decompresses it using a pooled decoder.
 type zstdByteStreamChunkReader struct {
 	client        bytestream.ByteStream_ReadClient
 	cancel        context.CancelFunc
-	zstdReader    io.ReadCloser
+	decoder       bb_zstd.Decoder
+	pipeReader    *io.PipeReader
 	readChunkSize int
 	wg            sync.WaitGroup
 }
 
 func (r *zstdByteStreamChunkReader) Read() ([]byte, error) {
-	if r.zstdReader == nil {
-		pr, pw := io.Pipe()
-
-		r.wg.Add(1)
-		go func() {
-			defer r.wg.Done()
-			defer pw.Close()
-			for {
-				chunk, err := r.client.Recv()
-				if err != nil {
-					if err != io.EOF {
-						pw.CloseWithError(err)
-					}
-					return
-				}
-				if _, writeErr := pw.Write(chunk.Data); writeErr != nil {
-					pw.CloseWithError(writeErr)
-					return
-				}
-			}
-		}()
-
-		var err error
-		r.zstdReader, err = util.NewZstdReadCloser(pr, zstd.WithDecoderConcurrency(1))
-		if err != nil {
-			pr.Close()
-			return nil, err
-		}
-	}
-
 	buf := make([]byte, r.readChunkSize)
-	n, err := r.zstdReader.Read(buf)
+	n, err := r.decoder.Read(buf)
 	if n > 0 {
 		if err != nil && err != io.EOF {
 			err = nil
@@ -125,9 +98,9 @@ func (r *zstdByteStreamChunkReader) Read() ([]byte, error) {
 }
 
 func (r *zstdByteStreamChunkReader) Close() {
-	if r.zstdReader != nil {
-		r.zstdReader.Close()
-	}
+	r.decoder.Close()
+
+	r.pipeReader.Close()
 	r.cancel()
 
 	// Drain the gRPC stream.
@@ -179,7 +152,7 @@ const resourceNameHeader = "build.bazel.remote.execution.v2.resource-name"
 // shouldUseZSTDCompression checks if ZSTD compression should be used.
 // It ensures GetCapabilities has been called to negotiate compression support.
 func (ba *casBlobAccess) shouldUseZSTDCompression(ctx context.Context, digest digest.Digest) (bool, error) {
-	if !ba.enableZSTDCompression {
+	if ba.zstdPool == nil {
 		return false, nil
 	}
 
@@ -220,11 +193,43 @@ func (ba *casBlobAccess) Get(ctx context.Context, digest digest.Digest) buffer.B
 	}
 
 	if useCompression {
-		return buffer.NewCASBufferFromChunkReader(digest, &zstdByteStreamChunkReader{
+		pipeReader, pipeWriter := io.Pipe()
+
+		r := &zstdByteStreamChunkReader{
 			client:        client,
 			cancel:        cancel,
+			pipeReader:    pipeReader,
 			readChunkSize: ba.readChunkSize,
-		}, buffer.BackendProvided(buffer.Irreparable(digest)))
+		}
+
+		// Start goroutine to read from gRPC and write to pipe.
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			defer pipeWriter.Close()
+			for {
+				chunk, err := client.Recv()
+				if err != nil {
+					if err != io.EOF {
+						pipeWriter.CloseWithError(err)
+					}
+					return
+				}
+				if _, writeErr := pipeWriter.Write(chunk.Data); writeErr != nil {
+					return
+				}
+			}
+		}()
+
+		decoder, err := ba.zstdPool.NewDecoder(ctx, pipeReader)
+		if err != nil {
+			pipeReader.CloseWithError(err)
+			cancel()
+			return buffer.NewBufferFromError(err)
+		}
+		r.decoder = decoder
+
+		return buffer.NewCASBufferFromChunkReader(digest, r, buffer.BackendProvided(buffer.Irreparable(digest)))
 	}
 
 	return buffer.NewCASBufferFromChunkReader(digest, &byteStreamChunkReader{
@@ -269,20 +274,24 @@ func (ba *casBlobAccess) Put(ctx context.Context, digest digest.Digest, b buffer
 			cancel:       cancel,
 		}
 
-		zstdWriter, err := zstd.NewWriter(byteStreamWriter, zstd.WithEncoderConcurrency(1))
+		// Acquire encoder from pool (blocks if at capacity — provides backpressure).
+		encoder, err := ba.zstdPool.NewEncoder(ctx, byteStreamWriter)
 		if err != nil {
 			cancel()
-			client.CloseAndRecv()
-			return status.Errorf(codes.Internal, "Failed to create zstd writer: %v", err)
+			b.Discard()
+			if _, closeErr := client.CloseAndRecv(); closeErr != nil {
+				return status.Errorf(codes.Internal, "Failed to close client: %v and acquire encoder: %v", closeErr, err)
+			}
+			return status.Errorf(codes.ResourceExhausted, "Failed to acquire ZSTD encoder: %v", err)
 		}
 
-		if err := b.IntoWriter(zstdWriter); err != nil {
-			zstdWriter.Close()
+		if err := b.IntoWriter(encoder); err != nil {
+			encoder.Close()
 			byteStreamWriter.Close()
 			return err
 		}
 
-		if err := zstdWriter.Close(); err != nil {
+		if err := encoder.Close(); err != nil {
 			byteStreamWriter.Close()
 			return err
 		}

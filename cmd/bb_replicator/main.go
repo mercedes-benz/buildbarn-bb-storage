@@ -12,6 +12,7 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/proto/configuration/bb_replicator"
 	replicator_pb "github.com/buildbarn/bb-storage/pkg/proto/replicator"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	bb_zstd "github.com/buildbarn/bb-storage/pkg/zstd"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -34,7 +35,8 @@ func main() {
 
 		blobAccessCreator := blobstore_configuration.NewCASBlobAccessCreator(
 			grpcClientFactory,
-			int(configuration.MaximumMessageSizeBytes))
+			int(configuration.MaximumMessageSizeBytes),
+			bb_zstd.NewPoolFromConfiguration(nil))
 		source, err := blobstore_configuration.NewBlobAccessFromConfiguration(
 			dependenciesGroup,
 			configuration.Source,

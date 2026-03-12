@@ -21,6 +21,7 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/proto/icas"
 	"github.com/buildbarn/bb-storage/pkg/proto/iscc"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	bb_zstd "github.com/buildbarn/bb-storage/pkg/zstd"
 
 	"google.golang.org/genproto/googleapis/bytestream"
 	"google.golang.org/grpc"
@@ -42,6 +43,9 @@ func main() {
 			return util.StatusWrap(err, "Failed to apply global configuration options")
 		}
 
+		// Create a process-wide ZSTD compression pool.
+		zstdPool := bb_zstd.NewPoolFromConfiguration(configuration.ZstdPool)
+
 		// Providers for data returned by ServerCapabilities.cache_capabilities
 		// as part of the GetCapabilities() call. We permit these calls
 		// if the client is permitted to at least one method against one
@@ -58,7 +62,8 @@ func main() {
 				configuration.ContentAddressableStorage,
 				blobstore_configuration.NewCASBlobAccessCreator(
 					grpcClientFactory,
-					int(configuration.MaximumMessageSizeBytes)),
+					int(configuration.MaximumMessageSizeBytes),
+					zstdPool),
 				grpcClientFactory)
 			if err != nil {
 				return util.StatusWrap(err, "Failed to create Content Addressable Storage")
@@ -185,7 +190,8 @@ func main() {
 						s,
 						grpcservers.NewByteStreamServer(
 							contentAddressableStorage,
-							1<<16))
+							1<<16,
+							zstdPool))
 				}
 				if actionCache != nil {
 					remoteexecution.RegisterActionCacheServer(

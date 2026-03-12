@@ -8,6 +8,7 @@ import "github.com/buildbarn/bb-storage/pkg/proto/configuration/blobstore/blobst
 import "github.com/buildbarn/bb-storage/pkg/proto/configuration/builder/builder.proto";
 import "github.com/buildbarn/bb-storage/pkg/proto/configuration/global/global.proto";
 import "github.com/buildbarn/bb-storage/pkg/proto/configuration/grpc/grpc.proto";
+import "github.com/buildbarn/bb-storage/pkg/proto/configuration/zstd/zstd.proto";
 
 option go_package = "github.com/buildbarn/bb-storage/pkg/proto/configuration/bb_storage";
 
@@ -102,6 +103,12 @@ message ApplicationConfiguration {
   // Support for IDENTITY (i.e., no compression) is implied.
   repeated build.bazel.remote.execution.v2.Compressor.Value
       supported_compressors = 20;
+
+  // ZSTD encoder/decoder pool configuration. When set, creates a
+  // process-wide pool shared by all gRPC CAS clients and the
+  // ByteStream server, and enables ZSTD compression for ByteStream
+  // operations where the server supports it.
+  buildbarn.configuration.zstd.PoolConfiguration zstd_pool = 21;
 }
 
 // Storage configuration for backends which don't allow batch digest

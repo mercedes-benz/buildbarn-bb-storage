@@ -19,6 +19,7 @@ import (
 	"github.com/buildbarn/bb-storage/pkg/program"
 	pb "github.com/buildbarn/bb-storage/pkg/proto/configuration/blobstore"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	bb_zstd "github.com/buildbarn/bb-storage/pkg/zstd"
 	"github.com/google/uuid"
 
 	"google.golang.org/grpc/codes"
@@ -38,18 +39,20 @@ type casBlobAccessCreator struct {
 	casBlobReplicatorCreator
 
 	maximumMessageSizeBytes int
+	zstdPool                bb_zstd.Pool
 }
 
 // NewCASBlobAccessCreator creates a BlobAccessCreator that can be
 // provided to NewBlobAccessFromConfiguration() to construct a
 // BlobAccess that is suitable for accessing the Content Addressable
 // Storage.
-func NewCASBlobAccessCreator(grpcClientFactory grpc.ClientFactory, maximumMessageSizeBytes int) BlobAccessCreator {
+func NewCASBlobAccessCreator(grpcClientFactory grpc.ClientFactory, maximumMessageSizeBytes int, zstdPool bb_zstd.Pool) BlobAccessCreator {
 	return &casBlobAccessCreator{
 		casBlobReplicatorCreator: casBlobReplicatorCreator{
 			grpcClientFactory: grpcClientFactory,
 		},
 		maximumMessageSizeBytes: maximumMessageSizeBytes,
+		zstdPool:                zstdPool,
 	}
 }
 
@@ -93,10 +96,14 @@ func (bac *casBlobAccessCreator) NewCustomBlobAccess(terminationGroup program.Gr
 		if err != nil {
 			return BlobAccessInfo{}, "", err
 		}
+		var zstdPool bb_zstd.Pool
+		if backend.Grpc.EnableCompression {
+			zstdPool = bac.zstdPool
+		}
 		// TODO: Should we provide a configuration option, so
 		// that digest.KeyWithoutInstance can be used?
 		return BlobAccessInfo{
-			BlobAccess:      grpcclients.NewCASBlobAccess(client, uuid.NewRandom, 64<<10, backend.Grpc.EnableCompression),
+			BlobAccess:      grpcclients.NewCASBlobAccess(client, uuid.NewRandom, 64<<10, zstdPool),
 			DigestKeyFormat: digest.KeyWithInstance,
 		}, "grpc", nil
 	case *pb.BlobAccessConfiguration_ReferenceExpanding:
@@ -158,7 +165,8 @@ func (bac *casBlobAccessCreator) NewCustomBlobAccess(terminationGroup program.Gr
 				},
 				s3.NewFromConfig(awsConfig),
 				gcsClient,
-				bac.maximumMessageSizeBytes),
+				bac.maximumMessageSizeBytes,
+				bac.zstdPool),
 			DigestKeyFormat: indirectContentAddressableStorage.DigestKeyFormat,
 		}, "reference_expanding", nil
 	default:

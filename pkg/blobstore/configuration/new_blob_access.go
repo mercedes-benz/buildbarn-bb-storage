@@ -25,6 +25,7 @@ import (
 	digest_pb "github.com/buildbarn/bb-storage/pkg/proto/configuration/digest"
 	"github.com/buildbarn/bb-storage/pkg/random"
 	"github.com/buildbarn/bb-storage/pkg/util"
+	bb_zstd "github.com/buildbarn/bb-storage/pkg/zstd"
 	"github.com/fxtlabs/primes"
 
 	"google.golang.org/grpc/codes"
@@ -602,11 +603,11 @@ func NewBlobAccessFromConfiguration(terminationGroup program.Group, configuratio
 // create BlobAccess objects for both the Content Addressable Storage
 // and Action Cache. Most Buildbarn components tend to require access to
 // both these data stores.
-func NewCASAndACBlobAccessFromConfiguration(terminationGroup program.Group, configuration *pb.BlobstoreConfiguration, grpcClientFactory grpc.ClientFactory, maximumMessageSizeBytes int) (blobstore.BlobAccess, blobstore.BlobAccess, error) {
+func NewCASAndACBlobAccessFromConfiguration(terminationGroup program.Group, configuration *pb.BlobstoreConfiguration, grpcClientFactory grpc.ClientFactory, maximumMessageSizeBytes int, zstdPool bb_zstd.Pool) (blobstore.BlobAccess, blobstore.BlobAccess, error) {
 	contentAddressableStorage, err := NewBlobAccessFromConfiguration(
 		terminationGroup,
 		configuration.GetContentAddressableStorage(),
-		NewCASBlobAccessCreator(grpcClientFactory, maximumMessageSizeBytes))
+		NewCASBlobAccessCreator(grpcClientFactory, maximumMessageSizeBytes, zstdPool))
 	if err != nil {
 		return nil, nil, util.StatusWrap(err, "Failed to create Content Addressable Storage")
 	}
