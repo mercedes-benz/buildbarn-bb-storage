@@ -53,7 +53,7 @@ require (
 	google.golang.org/api v0.262.0
 	google.golang.org/genproto/googleapis/bytestream v0.0.0-20260122232226-8e98ce8d340d
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260122232226-8e98ce8d340d
-	google.golang.org/grpc v1.78.0
+	google.golang.org/grpc v1.79.3
 	google.golang.org/grpc/security/advancedtls v1.0.0
 	google.golang.org/protobuf v1.36.11
 	k8s.io/apimachinery v0.35.0
@@ -62,7 +62,7 @@ require (
 )
 
 require (
-	cel.dev/expr v0.25.0 // indirect
+	cel.dev/expr v0.25.1 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.18.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
